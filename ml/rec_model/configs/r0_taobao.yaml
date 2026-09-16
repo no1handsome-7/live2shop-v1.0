@@ -1,0 +1,23 @@
+model:
+  architecture:
+    input_dim: 128
+    hidden_dim: 256
+    output_dim: 128
+    max_seq_len: 64
+    num_actions: 16
+    num_time_buckets: 32
+    num_duration_buckets: 32
+    layers: 2
+    heads: 4
+    dropout: 0.1
+data:
+  train_glob: data/processed/rec/taobao/*.npz
+train:
+  micro_batch: 128
+  grad_accum: 2
+  lr: 0.0003
+  weight_decay: 0.0001
+  max_steps: 12000
+  retrieval_weight: 1.0
+  rank_weight: 1.0
+  output_dir: checkpoints/rec-model/r0

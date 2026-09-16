@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package live2shop.v1;
+
+option go_package = "github.com/live2shop/live2shop/gen/go/live2shop/v1;live2shopv1";
+option java_multiple_files = true;
+option java_package = "com.live2shop.proto.v1";
+option java_outer_classname = "BehaviorProto";
+
+import "live2shop/v1/common.proto";
+
+enum UserAction {
+  USER_ACTION_UNSPECIFIED = 0;
+  ENTER_ROOM = 1;
+  HEARTBEAT = 2;
+  LIKE = 3;
+  FOLLOW = 4;
+  ITEM_CLICK = 5;
+  EXIT_ROOM = 6;
+}
+
+message UserBehaviorEvent {
+  EventMeta meta = 1;
+
+  int64 user_id = 2;
+  string session_id = 3;
+  int64 room_id = 4;
+
+  // Identifies one continuous RTMP ingest epoch. A reconnect creates a new id.
+  string stream_session_id = 5;
+
+  UserAction action = 6;
+
+  // Media timeline position the viewer is actually seeing.
+  optional int64 playhead_pts_ms = 7;
+
+  // Used by heartbeat events to reconstruct the watched media interval.
+  optional int64 previous_playhead_pts_ms = 8;
+
+  // Foreground, actually-played duration since the previous heartbeat.
+  optional int64 effective_watch_ms = 9;
+
+  // Present for ITEM_CLICK and other item-bound interactions.
+  optional int64 item_id = 10;
+
+  // Monotonically increasing sequence within one client session.
+  uint64 client_seq = 11;
+
+  bool foreground = 12;
+  float playback_rate = 13;
+
+  // Client hint only. The server/Flink job recomputes discontinuity as well.
+  bool client_detected_discontinuity = 14;
+}

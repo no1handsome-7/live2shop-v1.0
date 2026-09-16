@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+confluent-kafka==2.8.0
+grpcio-tools==1.70.0
+minio==7.2.15
+redis==5.2.1
+psycopg[binary]==3.2.4
+prometheus-client==0.21.1
+pydantic==2.10.4

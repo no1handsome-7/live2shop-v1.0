@@ -1,0 +1,14 @@
+seed: 42
+model:
+  init_checkpoint: checkpoints/commerce-vlm/p2/final
+data:
+  train_jsonl: data/processed/commerce_vlm/p3_preference.jsonl
+  num_workers: 2
+train:
+  micro_batch: 1
+  grad_accum: 24
+  lr: 1.0e-05
+  weight_decay: 0.01
+  beta: 0.1
+  max_steps: 800
+  output_dir: checkpoints/commerce-vlm/p3

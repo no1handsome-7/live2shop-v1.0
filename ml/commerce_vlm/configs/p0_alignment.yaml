@@ -1,0 +1,33 @@
+seed: 42
+model:
+  architecture:
+    llm_model: Qwen/Qwen3-1.7B-Base
+    vision_model: google/siglip2-base-patch16-224
+    num_visual_queries: 16
+    max_frames: 8
+    retrieval_dim: 128
+    max_length: 512
+    temporal_heads: 8
+    lora_rank: 32
+    lora_alpha: 64
+    lora_dropout: 0.05
+data:
+  train_jsonl: data/processed/commerce_vlm/p0_alignment.jsonl
+  num_workers: 4
+train:
+  stage: alignment
+  micro_batch: 2
+  grad_accum: 16
+  lr: 0.0002
+  weight_decay: 0.01
+  max_steps: 2500
+  save_every: 1000
+  log_every: 20
+  gradient_checkpointing: false
+  contrastive_weight: 0.25
+  output_dir: checkpoints/commerce-vlm/p0
+mlflow:
+  enabled: false
+  tracking_uri: http://localhost:5000
+  experiment: commerce-vlm
+  run_name: p0-alignment

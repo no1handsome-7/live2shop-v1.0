@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package live2shop.v1;
+
+option go_package = "github.com/live2shop/live2shop/gen/go/live2shop/v1;live2shopv1";
+option java_multiple_files = true;
+option java_package = "com.live2shop.proto.v1";
+option java_outer_classname = "MediaProto";
+
+import "live2shop/v1/common.proto";
+
+enum StreamLifecycleAction {
+  STREAM_LIFECYCLE_UNSPECIFIED = 0;
+  STREAM_STARTED = 1;
+  STREAM_ENDED = 2;
+}
+
+message StreamLifecycleEvent {
+  EventMeta meta = 1;
+
+  int64 room_id = 2;
+  string stream_session_id = 3;
+  StreamLifecycleAction action = 4;
+
+  string ingest_protocol = 5;
+  optional int64 stream_started_at_ms = 6;
+  optional int64 stream_ended_at_ms = 7;
+}
+
+message MediaSegmentEvent {
+  EventMeta meta = 1;
+
+  string segment_id = 2;
+  int64 room_id = 3;
+  string stream_session_id = 4;
+
+  uint64 sequence_no = 5;
+
+  int64 start_pts_ms = 6;
+  int64 end_pts_ms = 7;
+
+  // MinIO/S3-style URI. Never put video bytes in Kafka.
+  string object_uri = 8;
+
+  // PTS positions selected for visual inference.
+  repeated int64 sampled_frame_pts_ms = 9;
+
+  int64 duration_ms = 10;
+
+  // Useful for corruption detection and replay safety.
+  string sha256_hex = 11;
+}

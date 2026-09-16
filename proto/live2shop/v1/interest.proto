@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package live2shop.v1;
+
+option go_package = "github.com/live2shop/live2shop/gen/go/live2shop/v1;live2shopv1";
+option java_multiple_files = true;
+option java_package = "com.live2shop.proto.v1";
+option java_outer_classname = "InterestProto";
+
+import "live2shop/v1/common.proto";
+import "live2shop/v1/behavior.proto";
+
+enum AttributionMethod {
+  ATTRIBUTION_UNSPECIFIED = 0;
+  POINT_IN_TIME = 1;
+  INTERVAL_OVERLAP = 2;
+  NEAREST_PREVIOUS = 3;
+}
+
+message ContentContribution {
+  string state_id = 1;
+  optional int64 item_id = 2;
+
+  // For heartbeat/watch intervals.
+  int64 overlap_ms = 3;
+
+  // Normalized contribution weight across product-bearing states.
+  float attribution_weight = 4;
+
+  EmbeddingVector content_embedding = 5;
+  repeated string semantic_tags = 6;
+
+  float content_confidence = 7;
+  ModelRef content_model = 8;
+}
+
+message AttributedBehaviorEvent {
+  EventMeta meta = 1;
+
+  string source_event_id = 2;
+
+  int64 user_id = 3;
+  string session_id = 4;
+  int64 room_id = 5;
+  string stream_session_id = 6;
+
+  UserAction action = 7;
+  AttributionMethod method = 8;
+
+  repeated ContentContribution contributions = 9;
+
+  float attribution_confidence = 10;
+
+  // True when playhead movement is inconsistent with actual watch time.
+  bool playback_discontinuity = 11;
+}
+
+message InterestTag {
+  string tag = 1;
+  float score = 2;
+}
+
+message InterestState {
+  int64 user_id = 1;
+  optional string session_id = 2;
+
+  // Strictly monotonically increasing per user.
+  uint64 version = 3;
+
+  int64 updated_at_ms = 4;
+
+  // Highest source event-time completely incorporated into this state.
+  int64 source_watermark_ms = 5;
+
+  EmbeddingVector short_term_embedding = 6;
+  EmbeddingVector long_term_embedding = 7;
+  EmbeddingVector fused_embedding = 8;
+
+  repeated InterestTag top_interests = 9;
+
+  uint32 source_event_count = 10;
+  float confidence = 11;
+
+  ModelRef model = 12;
+}

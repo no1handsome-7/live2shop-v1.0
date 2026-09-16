@@ -1,0 +1,415 @@
+name: live2shop
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-live2shop}
+      POSTGRES_USER: ${POSTGRES_USER:-live2shop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-live2shop}
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-live2shop} -d ${POSTGRES_DB:-live2shop}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:16379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-live2shop}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-live2shop-secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes: [miniodata:/data]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-live2shop} ${MINIO_SECRET_KEY:-live2shop-secret}; do
+          echo "waiting for MinIO...";
+          sleep 1;
+        done;
+        mc mb --ignore-existing local/${MEDIA_BUCKET:-live2shop-media};
+        mc mb --ignore-existing local/${LAKE_BUCKET:-live2shop-lake};
+        mc mb --ignore-existing local/mlflow;
+        mc mb --ignore-existing local/milvus;
+        exit 0
+
+  kafka:
+    image: apache/kafka:4.3.1
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: CONTROLLER://:9093,PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes: [kafkadata:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka/create-topics.sh:/create-topics.sh:ro
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - --advertise-client-urls=http://127.0.0.1:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes: [etcddata:/etcd]
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      etcd:
+        condition: service_started
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-live2shop}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-live2shop-secret}
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes: [milvusdata:/var/lib/milvus]
+
+  mlflow:
+    build:
+      context: ./mlflow
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-live2shop}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-live2shop-secret}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      - --default-artifact-root=s3://mlflow/
+    ports: ["5000:5000"]
+    volumes: [mlflowdata:/mlflow]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  srs:
+    image: ossrs/srs:6
+    command: ["./objs/srs", "-c", "/usr/local/srs/conf/live2shop.conf"]
+    volumes:
+      - ./srs/srs.conf:/usr/local/srs/conf/live2shop.conf:ro
+      - srshls:/usr/local/srs/objs/nginx/html
+    ports:
+      - "1935:1935"
+      - "1985:1985"
+      - "8080:8080"
+
+  event-gateway:
+    build:
+      context: ..
+      dockerfile: services/event-gateway/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+      HTTP_ADDR: :8088
+    ports: ["8088:8088"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  media-segmenter:
+    build:
+      context: ..
+      dockerfile: services/media-segmenter/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-live2shop}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-live2shop-secret}
+      MEDIA_BUCKET: ${MEDIA_BUCKET:-live2shop-media}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+      SRS_RTMP_BASE: rtmp://srs:1935/live
+      SEGMENT_SECONDS: "5"
+    ports: ["8091:8091"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      srs:
+        condition: service_started
+
+  content-ai:
+    build:
+      context: ..
+      dockerfile: services/content-ai/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-live2shop}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-live2shop-secret}
+      MEDIA_BUCKET: ${MEDIA_BUCKET:-live2shop-media}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+      REDIS_URL: redis://redis:6379/0
+      MODEL_DIR: ${CONTENT_AI_MODEL_DIR:-/models/commerce-vlm/champion}
+      MODEL_BACKEND: ${CONTENT_AI_BACKEND:-trained}
+      MODEL_VERSION: ${CONTENT_AI_MODEL_VERSION:-commerce-vlm-v1}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      OCR_BACKEND: ${OCR_BACKEND:-paddle}
+      CUDA_VISIBLE_DEVICES: ${CONTENT_AI_GPU:-0}
+    volumes:
+      - ../checkpoints:/models:ro
+    ports: ["8093:8093"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  realtime-feature:
+    build:
+      context: ..
+      dockerfile: stream/realtime-feature/Dockerfile
+    command:
+      - standalone-job
+      - --job-classname
+      - com.live2shop.stream.RealtimeAttributionJob
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      ATTRIBUTION_LATENESS_MS: "7000"
+      POINT_STALENESS_MS: "8000"
+      FLINK_CHECKPOINT_URI: file:///opt/flink/checkpoints
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: realtime-feature
+        parallelism.default: 3
+    ports:
+      - "8081:8081"
+    volumes:
+      - flinkcheckpoints:/opt/flink/checkpoints
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  realtime-feature-taskmanager:
+    build:
+      context: ..
+      dockerfile: stream/realtime-feature/Dockerfile
+    command: taskmanager
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      ATTRIBUTION_LATENESS_MS: "7000"
+      POINT_STALENESS_MS: "8000"
+      FLINK_CHECKPOINT_URI: file:///opt/flink/checkpoints
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: realtime-feature
+        taskmanager.numberOfTaskSlots: 3
+        parallelism.default: 3
+    volumes:
+      - flinkcheckpoints:/opt/flink/checkpoints
+    depends_on:
+      - realtime-feature
+
+  derived-sink:
+    build:
+      context: ..
+      dockerfile: services/derived-sink/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  rec-model-server:
+    build:
+      context: ..
+      dockerfile: services/rec-model-server/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-live2shop_items}
+      MODEL_DIR: ${REC_MODEL_DIR:-/models/rec-model/champion}
+      MODEL_BACKEND: ${REC_MODEL_BACKEND:-trained}
+      MODEL_VERSION: ${REC_MODEL_VERSION:-rec-model-v1}
+      CUDA_VISIBLE_DEVICES: ${REC_MODEL_GPU:-1}
+    volumes:
+      - ../checkpoints:/models:ro
+    ports: ["8092:8092"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    # gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  recommendation-api:
+    build:
+      context: ..
+      dockerfile: services/recommendation-api/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://live2shop:live2shop@postgres:5432/live2shop}
+      REC_MODEL_SERVER: http://rec-model-server:8092
+      HTTP_ADDR: :8090
+    ports: ["8090:8090"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rec-model-server:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  lake-sink:
+    build:
+      context: ..
+      dockerfile: services/lake-sink/Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-live2shop}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-live2shop-secret}
+      LAKE_BUCKET: ${LAKE_BUCKET:-live2shop-lake}
+      FLUSH_ROWS: "2000"
+      FLUSH_SECONDS: "30"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ../web
+    environment:
+      VITE_GATEWAY_URL: ${WEB_PUBLIC_GATEWAY:-http://localhost:8088}
+      VITE_REC_URL: ${WEB_PUBLIC_RECOMMENDATION:-http://localhost:8090}
+      VITE_HLS_URL: ${WEB_PUBLIC_HLS:-http://localhost:8080}
+    ports: ["5173:80"]
+    depends_on:
+      - event-gateway
+      - recommendation-api
+      - srs
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: live2shop
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  kafkadata:
+  etcddata:
+  milvusdata:
+  mlflowdata:
+  srshls:
+  grafanadata:
+  flinkcheckpoints:

@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package live2shop.v1;
+
+option go_package = "github.com/live2shop/live2shop/gen/go/live2shop/v1;live2shopv1";
+option java_multiple_files = true;
+option java_package = "com.live2shop.proto.v1";
+option java_outer_classname = "RecommendationProto";
+
+import "live2shop/v1/common.proto";
+
+enum RecommendationScene {
+  REC_SCENE_UNSPECIFIED = 0;
+  POST_LIVE = 1;
+  HOME_FEED = 2;
+  RELATED_ITEMS = 3;
+}
+
+enum RecommendationTrigger {
+  REC_TRIGGER_UNSPECIFIED = 0;
+  EXIT_ROOM = 1;
+  MANUAL_REFRESH = 2;
+  PAGE_OPEN = 3;
+}
+
+enum RecallSource {
+  RECALL_SOURCE_UNSPECIFIED = 0;
+  SEMANTIC_ANN = 1;
+  CATEGORY = 2;
+  POPULAR = 3;
+}
+
+message ExperimentContext {
+  string experiment_id = 1;
+  string variant = 2;
+}
+
+message RecommendationRequest {
+  string request_id = 1;
+
+  int64 user_id = 2;
+  optional string session_id = 3;
+
+  RecommendationScene scene = 4;
+  RecommendationTrigger trigger = 5;
+
+  optional int64 context_room_id = 6;
+
+  uint32 limit = 7;
+  int64 request_time_ms = 8;
+
+  // Optional online freshness barrier. Recommendation API waits briefly for an
+  // InterestState whose source_watermark_ms has incorporated this event time.
+  optional int64 min_source_event_time_ms = 9;
+}
+
+message RecommendedItem {
+  string impression_id = 1;
+  int64 item_id = 2;
+  uint32 rank = 3;
+
+  repeated RecallSource recall_sources = 4;
+
+  float retrieval_score = 5;
+  float rank_score = 6;
+  float final_score = 7;
+
+  repeated string reason_codes = 8;
+}
+
+message RecommendationResponse {
+  string request_id = 1;
+
+  uint64 interest_version = 2;
+  repeated RecommendedItem items = 3;
+
+  ModelRef rec_model = 4;
+  ExperimentContext experiment = 5;
+
+  int64 latency_ms = 6;
+}
+
+message RecommendationServedEvent {
+  EventMeta meta = 1;
+
+  string request_id = 2;
+  int64 user_id = 3;
+  optional string session_id = 4;
+
+  RecommendationScene scene = 5;
+  RecommendationTrigger trigger = 6;
+
+  uint64 interest_version = 7;
+  repeated RecommendedItem items = 8;
+
+  ModelRef rec_model = 9;
+  ExperimentContext experiment = 10;
+
+  int64 latency_ms = 11;
+}
+
+enum FeedbackAction {
+  FEEDBACK_UNSPECIFIED = 0;
+
+  // Emitted by the client only when an item is actually visible.
+  IMPRESSION = 1;
+
+  CLICK = 2;
+  LONG_VIEW = 3;
+  FAVORITE = 4;
+  ADD_CART = 5;
+  PURCHASE = 6;
+  DISMISS = 7;
+}
+
+message RecommendationFeedbackEvent {
+  EventMeta meta = 1;
+
+  string impression_id = 2;
+  string request_id = 3;
+
+  int64 user_id = 4;
+  int64 item_id = 5;
+
+  uint32 position = 6;
+  FeedbackAction action = 7;
+
+  optional int64 dwell_ms = 8;
+  optional int64 order_value_cent = 9;
+
+  ExperimentContext experiment = 10;
+  ModelRef rec_model = 11;
+}

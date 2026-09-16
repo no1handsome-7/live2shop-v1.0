@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package live2shop.v1;
+
+option go_package = "github.com/live2shop/live2shop/gen/go/live2shop/v1;live2shopv1";
+option java_multiple_files = true;
+option java_package = "com.live2shop.proto.v1";
+option java_outer_classname = "ContentProto";
+
+import "live2shop/v1/common.proto";
+
+enum ContentTransition {
+  TRANSITION_UNSPECIFIED = 0;
+  TRANSITION_NONE = 1;
+  PRODUCT_APPEARED = 2;
+  PRODUCT_SWITCH = 3;
+  PRICE_CHANGE = 4;
+  PROMOTION_CHANGE = 5;
+  PRODUCT_DISAPPEARED = 6;
+}
+
+enum EvidenceType {
+  EVIDENCE_UNSPECIFIED = 0;
+  VISUAL = 1;
+  OCR = 2;
+  ASR = 3;
+  CATALOG = 4;
+}
+
+message ProductState {
+  optional int64 active_item_id = 1;
+
+  optional int64 category_id = 2;
+  repeated string category_path = 3;
+
+  string brand = 4;
+  repeated string style_tags = 5;
+  string color = 6;
+
+  map<string, string> attributes = 7;
+
+  optional int64 price_cent = 8;
+  repeated string promotion_tags = 9;
+
+  float catalog_match_confidence = 10;
+}
+
+message CatalogCandidate {
+  int64 item_id = 1;
+  float score = 2;
+}
+
+message Evidence {
+  EvidenceType type = 1;
+
+  int64 start_pts_ms = 2;
+  int64 end_pts_ms = 3;
+
+  // OCR/ASR text or concise visual/catalog evidence description.
+  string text = 4;
+
+  float confidence = 5;
+}
+
+message ContentStateEvent {
+  EventMeta meta = 1;
+
+  string state_id = 2;
+  string segment_id = 3;
+
+  int64 room_id = 4;
+  string stream_session_id = 5;
+
+  // Canonical, non-overlapping output interval for this model version.
+  int64 start_pts_ms = 6;
+  int64 end_pts_ms = 7;
+
+  bool product_visible = 8;
+
+  ProductState product = 9;
+  ContentTransition transition = 10;
+
+  repeated CatalogCandidate catalog_candidates = 11;
+  repeated Evidence evidence = 12;
+
+  EmbeddingVector content_embedding = 13;
+
+  float confidence = 14;
+  ModelRef model = 15;
+
+  // Allows exact replay/debug of state transitions.
+  optional string previous_state_id = 16;
+}

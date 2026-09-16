@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: event-gateway
+    static_configs:
+      - targets: ["event-gateway:8088"]
+
+  - job_name: recommendation-api
+    static_configs:
+      - targets: ["recommendation-api:8090"]
+
+  - job_name: media-segmenter
+    static_configs:
+      - targets: ["media-segmenter:8091"]
+
+  - job_name: rec-model-server
+    static_configs:
+      - targets: ["rec-model-server:8092"]
+
+  - job_name: content-ai
+    static_configs:
+      - targets: ["content-ai:8093"]

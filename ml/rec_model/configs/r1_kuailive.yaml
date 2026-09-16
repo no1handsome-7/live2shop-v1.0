@@ -1,0 +1,14 @@
+model:
+  init_checkpoint: checkpoints/rec-model/r0/final
+  reinit_content_adapter: true
+data:
+  train_glob: data/processed/rec/kuailive/*.npz
+train:
+  micro_batch: 128
+  grad_accum: 2
+  lr: 0.0001
+  weight_decay: 0.0001
+  max_steps: 7000
+  retrieval_weight: 1.0
+  rank_weight: 0.3
+  output_dir: checkpoints/rec-model/r1
