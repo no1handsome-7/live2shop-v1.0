@@ -1,104 +1,183 @@
-"""
-Weak-label commerce windows using Qwen3-VL-2B-Instruct.
+#!/usr/bin/env python3
+"""Weak-label P2 windows with a multimodal teacher.
 
-Teacher:
-  https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct
-
-Run multiple shards in parallel on separate GPUs:
-  CUDA_VISIBLE_DEVICES=0 python ... --shard-id 0 --num-shards 3
-  CUDA_VISIBLE_DEVICES=1 python ... --shard-id 1 --num-shards 3
-  CUDA_VISIBLE_DEVICES=2 python ... --shard-id 2 --num-shards 3
-
-The teacher labels are NOT ground truth. Run audit_commerce_labels.py and manually
-review a gold validation set before using them for SFT/RL evaluation.
+Product-page facts are annotation-time candidate facts, never observations. The
+teacher must decide which fields are supported by video/ASR/OCR. Final student
+prompts are generated independently and contain only ASR/OCR text; page facts
+remain under ``annotation_context`` until the explicit export step removes them.
 """
 from __future__ import annotations
-import argparse,json,re
-from pathlib import Path
-import cv2,numpy as np,torch
+
+import argparse
+import json
+from typing import Any
+
+import cv2
+import numpy as np
+import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText
-from common import read_jsonl,write_jsonl
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
-SCHEMA={
- "product_visible":True,"active_item_id":None,"category":"","brand":"",
- "style_tags":[],"color":"","attributes":{},"price_cent":None,
- "promotion_tags":[],"evidence":{"asr":[],"ocr":[],"visual":[]},"confidence":0.0
-}
+from common import read_jsonl, write_jsonl
+from product_pages.schema import build_student_prompt, empty_commerce_event
 
-def frames(path,n=8):
-    cap=cv2.VideoCapture(path);count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    out=[]
-    for idx in np.linspace(0,max(count-1,0),n).astype(int):
-        cap.set(cv2.CAP_PROP_POS_FRAMES,int(idx));ok,f=cap.read()
-        if ok:out.append(Image.fromarray(cv2.cvtColor(f,cv2.COLOR_BGR2RGB)))
+
+def frames(path, n=8):
+    cap = cv2.VideoCapture(path)
+    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    out = []
+    for idx in np.linspace(0, max(count - 1, 0), n).astype(int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if ok:
+            out.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
     cap.release()
-    while out and len(out)<n:out.append(out[-1].copy())
+    while out and len(out) < n:
+        out.append(out[-1].copy())
     return out
 
-def loose_json(s):
-    try:return json.loads(s)
-    except:
-        a,b=s.find("{"),s.rfind("}")
-        return json.loads(s[a:b+1]) if a>=0 and b>a else None
+
+def loose_json(text: str):
+    try:
+        return json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        start, end = text.find("{"), text.rfind("}")
+        try:
+            return json.loads(text[start:end + 1]) if start >= 0 and end > start else None
+        except json.JSONDecodeError:
+            return None
+
+
+def normalize_teacher_answer(obj: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Accept the v2 envelope and tolerate legacy flat answers for review."""
+    if not isinstance(obj, dict):
+        return None, {"parse_error": True}
+    if isinstance(obj.get("commerce_event"), dict):
+        event = obj["commerce_event"]
+        annotation = obj.get("annotation") if isinstance(obj.get("annotation"), dict) else {}
+    else:
+        event = dict(obj)
+        annotation = {}
+    if "confidence" in event:
+        annotation.setdefault("confidence", event.pop("confidence"))
+    if "active_item_id" in event:
+        annotation.setdefault("forbidden_fields_removed", []).append("active_item_id")
+        event.pop("active_item_id", None)
+    template = empty_commerce_event()
+    missing = sorted(set(template) - set(event))
+    if missing:
+        annotation["teacher_missing_fields"] = missing
+    normalized = {key: event.get(key, default) for key, default in template.items()}
+    normalized["schema_version"] = template["schema_version"]
+    return normalized, annotation
+
+
+def teacher_prompt(row: dict[str, Any]) -> str:
+    weak = row.get("weak_supervision") or {}
+    candidates = weak.get("page_candidates") or []
+    page_reference = weak.get("page_reference") or {}
+    output_shape = {
+        "commerce_event": empty_commerce_event(),
+        "annotation": {
+            "confidence": 0.0,
+            "page_fact_decisions": [
+                {
+                    "field": "brand",
+                    "decision": "supported|unobserved|conflict",
+                    "observed_value": None,
+                    "reason": "简短理由",
+                }
+            ],
+        },
+    }
+    return (
+        "你是电商视频数据标注器。连续帧、ASR、OCR 是唯一可作为 CommerceEvent 标签依据的观察证据。"
+        "页面候选事实和参考摘录仅用于提醒你检查可能属性，页面本身不是证据：若候选事实未在画面、ASR 或 OCR 中得到支持，"
+        "不得复制进 commerce_event；若页面与观察证据冲突，采用观察证据并在 page_fact_decisions 标记 conflict。"
+        "page_fact_decisions 必须逐一覆盖输入中的每个页面候选事实。"
+        "active_item_id、商品链接和店铺 ID 禁止进入 commerce_event。price_cent 仅填写窗口中明确展示或口播的价格，"
+        "单位为人民币分。evidence 只能摘录或描述真实观察；无法确认的标量用 null。只输出一个 JSON 对象。\n"
+        f"ASR={row.get('asr', '')}\n"
+        f"OCR={json.dumps(row.get('ocr') or [], ensure_ascii=False)}\n"
+        f"页面候选事实（弱监督，非证据）={json.dumps(candidates, ensure_ascii=False)}\n"
+        f"页面参考摘录（弱监督，非证据）={json.dumps(page_reference, ensure_ascii=False)}\n"
+        f"输出结构={json.dumps(output_shape, ensure_ascii=False)}"
+    )
+
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument("--input",required=True)
-    ap.add_argument("--output",required=True)
-    ap.add_argument("--model",default="Qwen/Qwen3-VL-2B-Instruct")
-    ap.add_argument("--shard-id",type=int,default=0)
-    ap.add_argument("--num-shards",type=int,default=1)
-    ap.add_argument("--max-new-tokens",type=int,default=384)
-    a=ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
+    parser.add_argument("--shard-id", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
+    args = parser.parse_args()
 
-    processor=AutoProcessor.from_pretrained(a.model)
-    model=AutoModelForImageTextToText.from_pretrained(
-        a.model,torch_dtype=torch.bfloat16,device_map="auto",attn_implementation="sdpa"
+    processor = AutoProcessor.from_pretrained(args.model)
+    model = AutoModelForImageTextToText.from_pretrained(
+        args.model,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="sdpa",
     ).eval()
-    rows=list(read_jsonl(a.input))[a.shard_id::a.num_shards];out=[]
-    for idx,row in enumerate(rows):
-        ims=frames(row["media"],8)
-        if not ims:continue
-        cats=row.get("room_candidates") or []
-        prompt=(
-          "你是直播电商数据标注器。根据连续8帧、ASR、OCR及直播间候选商品，"
-          "标注这个5秒窗口的商品状态。不得把不确定信息当事实；SKU无法可靠匹配时必须为null。"
-          "价格统一为人民币分。evidence字段只引用输入里真实出现的信息。只输出JSON。\n"
-          f"ASR={row.get('asr','')}\nOCR={row.get('ocr',[])}\n"
-          f"候选商品={json.dumps(cats,ensure_ascii=False)}\n"
-          f"目标schema={json.dumps(SCHEMA,ensure_ascii=False)}"
-        )
-        content=[{"type":"image"} for _ in ims]+[{"type":"text","text":prompt}]
-        messages=[{"role":"user","content":content}]
-        text=processor.apply_chat_template(messages,tokenize=False,add_generation_prompt=True)
-        inputs=processor(text=[text],images=ims,padding=True,return_tensors="pt").to(model.device)
+    rows = list(read_jsonl(args.input))[args.shard_id::args.num_shards]
+    output = []
+    for index, row in enumerate(rows):
+        images = frames(row["media"], 8)
+        if not images:
+            continue
+        prompt = teacher_prompt(row)
+        content = [{"type": "image"} for _ in images] + [{"type": "text", "text": prompt}]
+        messages = [{"role": "user", "content": content}]
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[text], images=images, padding=True, return_tensors="pt").to(model.device)
         with torch.inference_mode():
-            ids=model.generate(**inputs,max_new_tokens=a.max_new_tokens,do_sample=False)
-        generated=ids[:,inputs["input_ids"].shape[1]:]
-        answer=processor.batch_decode(generated,skip_special_tokens=True)[0]
-        obj=loose_json(answer)
-        if obj is None:
-            obj={"_parse_error":answer}
-        out.append({
-          "media":row["media"],"media_type":"video",
-          "prompt":(
-             "根据直播视频窗口、ASR、OCR和候选商品池输出当前CommerceEvent JSON；"
-             "未知字段不要猜测。\\n"
-             f"ASR={row.get('asr','')}\\n"
-             f"OCR={row.get('ocr',[])}\\n"
-             f"候选商品={json.dumps(cats,ensure_ascii=False)}"
-          ),
-          "target":json.dumps(obj,ensure_ascii=False,sort_keys=True),
-          "target_json":obj,
-          "retrieval_text":json.dumps(obj,ensure_ascii=False,sort_keys=True),
-          "context":{"asr":row.get("asr",""),"ocr":row.get("ocr",[]),
-                     "room_candidates":cats,"start_ms":row.get("start_ms"),
-                     "end_ms":row.get("end_ms"),"room_id":row.get("room_id")},
-          "meta":{"source":"teacher","teacher_model":a.model}
-        })
-        if (idx+1)%20==0:print("labeled",idx+1)
-    write_jsonl(a.output,out)
-    print("teacher rows:",len(out))
+            ids = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
+        generated = ids[:, inputs["input_ids"].shape[1]:]
+        answer = processor.batch_decode(generated, skip_special_tokens=True)[0]
+        parsed = loose_json(answer)
+        event, annotation = normalize_teacher_answer(parsed)
+        if event is None:
+            annotation["raw_answer"] = answer
 
-if __name__=="__main__":main()
+        target_text = json.dumps(event, ensure_ascii=False, sort_keys=True) if event else answer
+        output.append({
+            "media": row["media"],
+            "media_type": "video",
+            "prompt": build_student_prompt(row.get("asr", ""), row.get("ocr") or []),
+            "target": target_text,
+            "target_json": event,
+            "retrieval_text": target_text,
+            "context": {
+                "asr": row.get("asr", ""),
+                "ocr": row.get("ocr") or [],
+                "start_ms": row.get("start_ms"),
+                "end_ms": row.get("end_ms"),
+            },
+            "annotation": annotation,
+            "annotation_context": {
+                "weak_supervision": row.get("weak_supervision") or {},
+                "provenance": row.get("provenance") or {},
+            },
+            "meta": {
+                "source": "teacher",
+                "teacher_model": args.model,
+                "commerce_event_schema": "commerce_event.v2",
+                "source_kind": row.get("source_kind"),
+                "source_platform": row.get("source"),
+                "source_product_id": row.get("source_product_id"),
+                "product_group_key": row.get("product_group_key"),
+                "video_sha256": row.get("video_sha256"),
+                "split": row.get("split"),
+            },
+        })
+        if (index + 1) % 20 == 0:
+            print("labeled", index + 1)
+    write_jsonl(args.output, output)
+    print("teacher rows:", len(output))
+
+
+if __name__ == "__main__":
+    main()

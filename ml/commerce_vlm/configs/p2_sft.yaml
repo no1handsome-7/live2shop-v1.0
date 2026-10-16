@@ -1,13 +1,15 @@
 seed: 42
 model:
   init_checkpoint: checkpoints/commerce-vlm/p1/final
+  architecture:
+    max_length: 768
 data:
   train_jsonl: data/processed/commerce_vlm/p2_sft.jsonl
   num_workers: 4
 train:
   stage: sft
   micro_batch: 1
-  grad_accum: 24
+  grad_accum: 9
   lr: 3.0e-05
   weight_decay: 0.01
   max_steps: 1200

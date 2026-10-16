@@ -14,7 +14,7 @@ verifier_reward = module.verifier_reward
 
 def test_reward_prefers_correct_json():
     target = {
-        "active_item_id": 1,
+        "schema_version": "commerce_event.v2",
         "category": "牛仔夹克",
         "brand": "Levi's",
         "color": "blue",
@@ -23,7 +23,7 @@ def test_reward_prefers_correct_json():
         "evidence": {"asr": ["399"]},
     }
     good = """{
-      "active_item_id": 1,
+      "schema_version": "commerce_event.v2",
       "category": "牛仔夹克",
       "brand": "Levi's",
       "color": "blue",
@@ -32,7 +32,7 @@ def test_reward_prefers_correct_json():
       "evidence": {"asr": ["399"]}
     }"""
     bad = """{
-      "active_item_id": 2,
+      "schema_version": "commerce_event.v2",
       "category": "鞋",
       "brand": "X",
       "color": "red",

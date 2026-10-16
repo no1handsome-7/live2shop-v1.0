@@ -17,6 +17,7 @@ function App(){
   const sessionRef = useRef(crypto.randomUUID());
   const previousPtsRef = useRef(null);
   const lastHeartbeatRef = useRef(Date.now());
+  const timelineRef = useRef(null);
   const lastBehaviorTimeRef = useRef(0);
   const seenImpressions = useRef(new Set());
 
@@ -52,7 +53,10 @@ function App(){
           fetch(`${GATEWAY}/api/v1/debug/live/${roomId}/state`).then(r=>r.ok?r.json():null),
           fetch(`${GATEWAY}/api/v1/debug/users/${userId}/interest`).then(r=>r.ok?r.json():null)
         ]);
-        if(t.status==="fulfilled"&&t.value)setTimeline(t.value);
+        if(t.status==="fulfilled"&&t.value){
+          timelineRef.current=t.value;
+          setTimeline(t.value);
+        }
         if(c.status==="fulfilled"&&c.value)setContent(c.value);
         if(i.status==="fulfilled"&&i.value)setInterest(i.value);
       }catch{}
@@ -61,22 +65,24 @@ function App(){
   },[]);
 
   function currentPts(){
-    if(!timeline) return null;
+    const t=timelineRef.current;
+    if(!t) return null;
     let latencyMs=6000;
     const hls=hlsRef.current;
     if(hls && Number.isFinite(hls.latency)) latencyMs=Math.max(0,hls.latency*1000);
-    return Math.max(0,Math.round(timeline.latest_end_pts_ms-latencyMs));
+    return Math.max(0,Math.round(t.latest_end_pts_ms-latencyMs));
   }
 
   async function sendBehavior(action, extra={}){
-    if(!timeline) throw new Error("直播时间线尚未就绪");
+    const t=timelineRef.current;
+    if(!t) throw new Error("直播时间线尚未就绪");
     const now=Date.now();
     lastBehaviorTimeRef.current=now;
     const body={
       user_id:userId,
       session_id:sessionRef.current,
       room_id:roomId,
-      stream_session_id:timeline.stream_session_id,
+      stream_session_id:t.stream_session_id,
       action,
       event_time_ms:now,
       client_seq:seqRef.current++,
@@ -147,7 +153,7 @@ function App(){
       }catch(e){console.warn(e)}
     },10000);
     return ()=>clearInterval(id);
-  },[joined,timeline]);
+  },[joined]);
 
   async function feedback(item,action){
     if(!recMeta) return;

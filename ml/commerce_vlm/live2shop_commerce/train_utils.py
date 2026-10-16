@@ -21,6 +21,17 @@ def load_yaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+def gather_with_grad(x: torch.Tensor) -> torch.Tensor:
+    """Differentiable all-gather for distributed contrastive learning."""
+    if (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+    ):
+        from torch.distributed.nn.functional import all_gather
+        return torch.cat(list(all_gather(x)), dim=0)
+    return x
+
+
 def contrastive_loss(a: torch.Tensor, b: torch.Tensor, temperature: float = 0.07):
     if a.size(0) < 2:
         return a.new_zeros(())

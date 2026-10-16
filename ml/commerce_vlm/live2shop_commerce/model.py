@@ -76,7 +76,8 @@ class CommerceVLM(nn.Module):
         self.llm = AutoModelForCausalLM.from_pretrained(
             cfg.llm_model,
             torch_dtype=dtype,
-            attn_implementation="sdpa",
+            # Prefer Flash Attention when installed, fallback to SDPA.
+            attn_implementation="flash_attention_2",
         )
         self.llm.resize_token_embeddings(len(self.tokenizer))
 

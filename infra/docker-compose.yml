@@ -252,6 +252,8 @@ services:
       KAFKA_BROKERS: kafka:9092
       ATTRIBUTION_LATENESS_MS: "7000"
       POINT_STALENESS_MS: "8000"
+      KAFKA_TRANSACTION_TIMEOUT_MS: "300000"
+      KAFKA_TRANSACTIONAL_ID_PREFIX: "live2shop-attribution"
       FLINK_CHECKPOINT_URI: file:///opt/flink/checkpoints
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: realtime-feature
@@ -273,6 +275,8 @@ services:
       KAFKA_BROKERS: kafka:9092
       ATTRIBUTION_LATENESS_MS: "7000"
       POINT_STALENESS_MS: "8000"
+      KAFKA_TRANSACTION_TIMEOUT_MS: "300000"
+      KAFKA_TRANSACTIONAL_ID_PREFIX: "live2shop-attribution"
       FLINK_CHECKPOINT_URI: file:///opt/flink/checkpoints
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: realtime-feature

@@ -14,9 +14,9 @@ import argparse,json
 from pathlib import Path
 from common import write_jsonl
 
-VIDEO=("video","video_path","video_name","video_id","filename")
+VIDEO=("video","videos","video_path","video_name","video_id","filename")
 Q=("question","query","instruction","prompt")
-A=("answer","response","output","gt_answer")
+A=("answer","response","output","gt_answer","reward_model")
 
 def first(r,ks):
     for k in ks:
@@ -48,6 +48,23 @@ def main():
     root=Path(a.video_root);rows=[]
     for r in load(a.annotation):
         vid,q,ans=first(r,VIDEO),first(r,Q),first(r,A)
+
+        # RL prompt is stored as message list
+        if hasattr(q, "tolist"):
+            q = q.tolist()
+
+        if isinstance(q, list) and len(q):
+            if isinstance(q[0], dict):
+                q = q[0].get("content", "")
+
+        # reward_model stores answer
+        if isinstance(ans, dict):
+            ans = (
+                ans.get("answer")
+                or ans.get("response")
+                or ans.get("ground_truth")
+            )
+            
         if not q or not ans:continue
         p=None
         if vid:

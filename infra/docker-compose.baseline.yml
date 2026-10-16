@@ -1,0 +1,18 @@
+services:
+  content-ai:
+    environment:
+      MODEL_BACKEND: baseline
+      MODEL_VERSION: commerce-baseline-v1
+      MODEL_ALIAS: baseline
+      EMBEDDING_VERSION: baseline-hash-v1
+
+      ASR_BACKEND: disabled
+      OCR_BACKEND: rapidocr
+      RAPIDOCR_MODEL_ROOT: /var/cache/rapidocr
+      CUDA_VISIBLE_DEVICES: "-1"
+
+      CONTENT_AI_CONSUMER_GROUP: content-ai-baseline-v1
+      CONTENT_AI_AUTO_OFFSET_RESET: latest
+
+    volumes:
+      - ../.cache/rapidocr:/var/cache/rapidocr

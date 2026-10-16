@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import math
 from pathlib import Path
 from typing import Any
 
@@ -124,8 +125,25 @@ class CommerceCollator:
             max_length=self.max_length, return_tensors="pt"
         )
         x = self.tokenizer(
-            full, padding=True, truncation=True,
-            max_length=self.max_length, return_tensors="pt"
+            full,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        )
+
+        # Hard fail is dangerous during large training jobs. Instead expose
+        # truncation information for dataset audit/logging.
+        x["was_truncated"] = torch.tensor(
+            [
+                int(len(ids) >= self.max_length)
+                for ids in self.tokenizer(
+                    full,
+                    padding=False,
+                    truncation=False
+                ).input_ids
+            ],
+            dtype=torch.bool,
         )
         labels = x.input_ids.clone()
         # Mask padding and prompt tokens.

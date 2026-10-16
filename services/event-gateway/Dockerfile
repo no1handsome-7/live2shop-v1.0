@@ -14,7 +14,7 @@ RUN mkdir -p gen && \
       --go_out=gen --go_opt=paths=source_relative \
       $(find /src/proto -name '*.proto' | sort)
 
-RUN go mod download
+RUN go mod tidy
 RUN CGO_ENABLED=0 go build -o /out/event-gateway .
 
 FROM gcr.io/distroless/static-debian12:nonroot

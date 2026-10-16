@@ -333,21 +333,26 @@ human-reviewed difficult cases
 可选 E-VAds SFT QA
 ```
 
-必须使用 `docs/DATASETS.md` 的：
+必须按 `docs/DATASETS.md` 的商品页弱监督链路依次使用：
 
 ```text
+collect_product_pages.py
+build_product_page_manifest.py
 build_commerce_windows.py
+align_page_video_evidence.py
 teacher_label_commerce.py
 audit_commerce_labels.py
+export_p2_student_samples.py
 ```
 
-最终：
+最终必须用导出器剥离页面候选事实，不能直接拼接 Teacher/Audit 中间文件：
 
 ```bash
-cat \
- data/self/audit/accepted.jsonl \
- data/self/audit/reviewed.jsonl \
- > data/processed/commerce_vlm/p2_sft.jsonl
+python data_tools/export_p2_student_samples.py \
+  --input data/self/audit/accepted.jsonl \
+  --input data/self/audit/reviewed.jsonl \
+  --split train \
+  --output data/processed/commerce_vlm/p2_sft.jsonl
 ```
 
 可以再加入一小部分 E-VAds：
@@ -367,8 +372,8 @@ python data_tools/mix_jsonl.py \
 
 ```json
 {
+  "schema_version": "commerce_event.v2",
   "product_visible": true,
-  "active_item_id": 300001,
   "category": "牛仔夹克",
   "brand": "Levi's",
   "style_tags": ["古着", "美式复古", "牛仔"],
@@ -380,10 +385,13 @@ python data_tools/mix_jsonl.py \
     "asr": ["..."],
     "ocr": ["..."],
     "visual": ["..."]
-  },
-  "confidence": 0.91
+  }
 }
 ```
+
+`active_item_id`、页面价、商品链接和标注置信度均不是可观察目标，不得进入 `target_json`。
+`price_cent` 专指当前视频窗口中由画面、OCR 或口播支持的人民币价格；页面价格只保存在审计层的
+`page_price_cent`。Teacher 的 confidence 位于 `annotation`，最终学生样本会将其删除。
 
 `PRODUCT_SWITCH/PRICE_CHANGE` 在线由前后 Snapshot 确定性比较得到，而不是让 LLM 自己猜。
 
@@ -409,7 +417,6 @@ CUDA_VISIBLE_DEVICES=0,1,2 accelerate launch \
 在 `manual_gold` 上测试：
 
 ```text
-SKU accuracy
 category accuracy/F1
 brand F1
 price exact match
@@ -424,10 +431,9 @@ unsupported/hallucination rate
 
 ## 为什么做
 
-电商非常怕“几乎一样但错 SKU”：
+电商结构化理解非常怕“看起来合理但观察证据不支持”：
 
 ```text
-70505 vs 507XX
 256GB vs 512GB
 500ml vs 750ml
 直播价 399 vs 标价 469
@@ -447,7 +453,6 @@ python data_tools/build_preferences.py \
 hard negative 类型：
 
 ```text
-wrong SKU
 wrong price
 wrong color
 unsupported style

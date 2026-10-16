@@ -15,7 +15,7 @@ import argparse,json,random
 from pathlib import Path
 from common import write_jsonl
 
-CAPTION_KEYS=("caption","video_caption","description","dense_caption")
+CAPTION_KEYS=("caption","captions","video_caption","description","dense_caption")
 VIDEO_KEYS=("video","video_path","path","video_name","video_id")
 
 def pick(row,keys):

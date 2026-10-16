@@ -26,11 +26,12 @@ def main():
 
     accelerator = Accelerator(
         gradient_accumulation_steps=int(cfg["train"]["grad_accum"]),
-        mixed_precision="bf16",
+        mixed_precision="bf16" if torch.cuda.is_bf16_supported() else "fp16",
     )
 
     stage = cfg["train"]["stage"]
     checkpoint = cfg["model"].get("init_checkpoint")
+    resume = cfg["train"].get("resume_checkpoint")
     if checkpoint:
         model = CommerceVLM.from_checkpoint(
             checkpoint,
@@ -60,6 +61,11 @@ def main():
         weight_decay=float(cfg["train"].get("weight_decay", 0.01)),
     )
     model, optim, loader = accelerator.prepare(model, optim, loader)
+
+    if resume:
+        accelerator.load_state(resume)
+        if accelerator.is_main_process:
+            print(f"resumed accelerator state from {resume}")
 
     train_n, total_n = count_trainable(accelerator.unwrap_model(model))
     if accelerator.is_main_process:

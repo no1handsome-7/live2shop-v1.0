@@ -1,8 +1,9 @@
 """
-Turn owned/licensed e-commerce or live videos into 5-second weak-supervision windows.
+Turn authorized e-commerce/live videos into 5-second weak-supervision windows.
 
 Input JSONL:
   {"video": "/path/live.mp4", "room_id": "demo001", "catalog": "/path/catalog.json"}
+or product-page manifest rows emitted by ``build_product_page_manifest.py``.
 
 Output JSONL:
   {
@@ -11,14 +12,16 @@ Output JSONL:
     "room_id":"...",
     "start_ms":..., "end_ms":...,
     "asr":"...", "ocr":[...],
-    "room_candidates":[...]
+    "room_candidates":[...],              # legacy live-room source only
+    "offline_page_facts": {...},           # product-page teacher/audit only
+    "product_group_key":"...", "split":"train"
   }
 
 Use only videos you are permitted to process. For E-VAds, use only its SFT/RL
 training split media, never the benchmark test split for training.
 """
 from __future__ import annotations
-import argparse,json,subprocess,tempfile
+import argparse,json,re,subprocess
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -27,6 +30,11 @@ from PIL import Image
 from tqdm import tqdm
 
 from common import read_jsonl, write_jsonl
+
+def safe_component(value):
+    value=re.sub(r"[^A-Za-z0-9._-]+","_",str(value)).strip("._")
+    if not value:raise ValueError("empty/unsafe output id")
+    return value[:160]
 
 def duration_ms(path):
     x=subprocess.check_output([
@@ -86,12 +94,43 @@ def main():
 
     rows=[]
     outroot=Path(a.output_root)
+
+    used_rooms=set()
+    seen_videos={}
     for src in read_jsonl(a.manifest):
         video=Path(src["video"])
-        room=str(src.get("room_id",video.stem))
+        if src.get("product_group_key"):
+            suffix=str(src.get("video_sha256") or video.stem)[:16]
+            room=safe_component(f"product_{src['product_group_key']}_{suffix}")
+        else:
+            room=safe_component(src.get("room_id",video.stem))
+
+        # Prevent accidental collision between streams.
+        if room in used_rooms:
+            raise ValueError(
+                f"Duplicate room_id detected: {room}"
+            )
+        used_rooms.add(room)
+
+        video_key=str(video.resolve())
+        split=src.get("split")
+        if video_key in seen_videos and seen_videos[video_key] != split:
+            raise ValueError(
+                f"Leakage detected: same video appears in multiple splits: "
+                f"{video_key}"
+            )
+        seen_videos[video_key]=split
+
         candidates=[]
         if src.get("catalog"):
-            candidates=json.loads(Path(src["catalog"]).read_text(encoding="utf-8"))
+            raw=Path(src["catalog"]).read_text(encoding="utf-8")
+            try:
+                candidates=json.loads(raw)
+            except json.JSONDecodeError:
+                # accept JSONL catalogs
+                candidates=[json.loads(x) for x in raw.splitlines() if x.strip()]
+            if not isinstance(candidates,list):
+                raise ValueError("catalog must be a JSON array or JSONL")
         windows=split_one(video,outroot/room,a.window_ms)
         for start,end,path in tqdm(windows,desc=room):
             asr=""
@@ -112,7 +151,16 @@ def main():
                 "media":str(path.resolve()),"media_type":"video",
                 "room_id":room,"start_ms":start,"end_ms":end,
                 "asr":asr,"ocr":ocr,"room_candidates":candidates,
-                "source":src.get("source","owned_or_licensed")
+                "source":src.get("source","owned_or_licensed"),
+                "source_kind":src.get("source_kind","live_room"),
+                "split":src.get("split"),
+                "product_group_key":src.get("product_group_key"),
+                "source_product_id":src.get("source_product_id"),
+                "video_sha256":src.get("video_sha256"),
+                # This field may be read by the teacher and audit tools only.
+                # export_p2_student_samples.py removes it from training JSONL.
+                "offline_page_facts":src.get("page_facts") or {},
+                "provenance":src.get("provenance") or {},
             })
     write_jsonl(a.output_jsonl,rows)
     print("windows:",len(rows))

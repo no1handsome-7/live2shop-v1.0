@@ -1,6 +1,4 @@
-"""
-Create SKU/price/style/evidence hard negatives from audited CommerceEvent SFT data.
-"""
+"""Create price/style/evidence hard negatives from CommerceEvent v2 data."""
 from __future__ import annotations
 import argparse,copy,json,random
 from common import read_jsonl,write_jsonl
@@ -11,16 +9,11 @@ STYLES=["古着","美式复古","工装","街头","运动","通勤"]
 def corrupt(row,rng):
     good=copy.deepcopy(row["target_json"]);bad=copy.deepcopy(good)
     modes=[]
-    candidates=row.get("context",{}).get("room_candidates") or []
-    if len(candidates)>=2:modes.append("sku")
     if isinstance(good.get("price_cent"),int):modes.append("price")
     if good.get("color"):modes.append("color")
     modes+=["style","promotion","evidence"]
     mode=rng.choice(modes)
-    if mode=="sku":
-        cur=good.get("active_item_id");alts=[x["item_id"] for x in candidates if x.get("item_id")!=cur]
-        bad["active_item_id"]=int(rng.choice(alts))
-    elif mode=="price":
+    if mode=="price":
         p=int(good["price_cent"]);bad["price_cent"]=max(100,p+rng.choice([-5000,-2000,2000,5000]))
     elif mode=="color":
         bad["color"]=rng.choice([x for x in COLORS if x!=good.get("color")])

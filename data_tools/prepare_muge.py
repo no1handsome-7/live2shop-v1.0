@@ -79,7 +79,7 @@ def main():
         convert(rows,args.output,args.root,args.limit,args.image_out_dir)
     else:
         from modelscope.msdatasets import MsDataset
-        ds=MsDataset.load(args.modelscope_id,split="train")
+        ds=MsDataset.load(args.modelscope_id, split="train", trust_remote_code=True)
         convert(ds,args.output,args.root,args.limit,args.image_out_dir)
 
 if __name__=="__main__": main()

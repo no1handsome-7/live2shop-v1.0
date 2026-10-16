@@ -8,6 +8,10 @@ Live2Shop is a small-scale but end-to-end live-commerce system built for a reali
 
 The repository intentionally reduces **capacity**, not **system layers**.
 
+> 当前开发范围（P2 数据阶段）：先完成 CommerceVLM；推荐模型暂缓。商品详情页仅为商家讲解视频
+> 提供离线弱监督，CommerceVLM 的训练与在线推理输入始终只有视频、ASR 和 OCR。详见
+> `docs/DATASETS.md` 第 5 节。
+
 ## What is implemented
 
 ### Multimodal model training

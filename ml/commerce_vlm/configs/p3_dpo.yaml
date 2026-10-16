@@ -1,6 +1,8 @@
 seed: 42
 model:
   init_checkpoint: checkpoints/commerce-vlm/p2/final
+  architecture:
+    max_length: 768
 data:
   train_jsonl: data/processed/commerce_vlm/p3_preference.jsonl
   num_workers: 2

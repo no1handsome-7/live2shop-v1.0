@@ -51,7 +51,7 @@ MediaSegmentEvent
       ↓
 CommerceVLM
       ↓
-catalog constrained SKU match
+CommerceEvent v2（可观察商品语义，不预测平台 SKU）
       ↓
 ContentStateEvent
 
@@ -222,34 +222,29 @@ VLM inference may use overlapping context internally, but emitted canonical stat
 The deterministic state layer computes transitions:
 
 ```text
-previous SKU != current SKU → PRODUCT_SWITCH
-same SKU, price differs      → PRICE_CHANGE
+observed price differs       → PRICE_CHANGE
+promotion tags differ        → PROMOTION_CHANGE
 visible → invisible          → PRODUCT_DISAPPEARED
 ```
 
-This keeps state-machine correctness outside the LLM.
+精确的 `PRODUCT_SWITCH` 需要未来独立的 SKU matching 层；`commerce_event.v2` 本身不声称识别
+平台 SKU。这使状态机和业务标识匹配保持在 LLM 之外。
 
 ---
 
-## 7. Catalog-constrained SKU matching
+## 7. CommerceVLM 的输入边界
 
-A real platform already knows which products are attached to a live room.
-
-`room_items` provides candidate SKU IDs.
-
-CommerceVLM receives:
+CommerceVLM 的训练与在线推理严格使用：
 
 ```text
-video + OCR + ASR + room candidate products + previous state
+video + ASR + OCR
 ```
 
-If it cannot reliably identify one:
+商品详情页描述和价格只在 P2 离线制数时作为 Teacher 弱监督，最终训练 JSONL 会物理删除这些字段。
+平台 `active_item_id` 不能从视频可靠恢复，因此不属于 `commerce_event.v2` target。
 
-```text
-active_item_id = NULL
-```
-
-It does **not** search millions of products and hallucinate a SKU.
+如果未来恢复推荐链路，catalog/SKU matching 必须作为 CommerceVLM 之后的独立受约束模块；不能把候选
+商品、上一状态或页面描述重新塞入 CommerceVLM prompt。
 
 ---
 

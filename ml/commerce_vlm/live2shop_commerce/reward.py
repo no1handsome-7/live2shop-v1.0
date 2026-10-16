@@ -4,9 +4,9 @@ import json
 from typing import Any
 
 ALLOWED_KEYS = {
-    "product_visible", "active_item_id", "category", "brand", "style_tags",
+    "schema_version", "product_visible", "category", "brand", "style_tags",
     "color", "attributes", "price_cent", "promotion_tags",
-    "evidence", "confidence",
+    "evidence",
 }
 
 def parse_json_loose(text: str) -> dict | None:
@@ -28,7 +28,7 @@ def verifier_reward(pred_text: str, target: dict[str, Any]) -> tuple[float, dict
         return -1.0, {"schema": -1.0}
 
     schema = 1.0 if isinstance(pred, dict) else -1.0
-    fields = ["active_item_id", "category", "brand", "color", "price_cent"]
+    fields = ["category", "brand", "color", "price_cent"]
     correct, total = 0.0, 0
     for f in fields:
         if f in target and target[f] not in (None, "", []):

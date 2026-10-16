@@ -2,6 +2,9 @@
 
 The rule is: reduce capacity, not system layers.
 
+> 当前范围调整：推荐模型和推荐闭环暂缓，优先完成 CommerceVLM P2 商品页弱监督数据、训练与评测。
+> 下文涉及 RecModel、行为归因和推荐服务的里程碑属于后续阶段，不是当前 P2 阻塞项。
+
 ## Week 1 — contract/media/data foundation
 
 Day 1-2:
@@ -18,7 +21,7 @@ Day 3-4:
 
 Day 5-7:
 - download/prepare MUGE + Products-10K
-- prepare own live demo catalog/videos
+- 准备获准使用的商品详情页 URL 与商家讲解视频
 - P0 alignment begins
 - content-ai wiring with current checkpoint
 
@@ -32,7 +35,8 @@ Day 8-9:
 - P1 CPT
 
 Day 10-11:
-- self live window extraction
+- 商品页主详情/主视频采集、去重和按商品 split
+- 商品视频切窗
 - OCR/ASR
 - 3-GPU teacher labeling
 
@@ -42,12 +46,12 @@ Day 12-13:
 
 Day 14:
 - ContentState online
-- catalog-constrained SKU
+- CommerceEvent v2（不预测平台 SKU）
 - Debug Content panel
 
 **Gate:** live stream updates real AI ContentState.
 
-## Week 3 — post-training + real-time recommendation
+## Week 3 — CommerceVLM post-training（推荐链路暂缓）
 
 Day 15:
 - P3 DPO
@@ -55,35 +59,32 @@ Day 15:
 
 Day 16:
 - P4 RLVR start on GPU0
-- TAOBAO RecModel prep/train on GPU1/2
+- 扩充 P2 冲突/负样本与人工 Gold
 
 Day 17:
-- KuaiLive prep/R1
-- Temporal Flink attribution final
+- P3/P4 数据质量与消融
+- 在线 video + ASR + OCR 输入契约验证
 
 Day 18:
-- commerce item encoding
-- R2 bridge
-- Milvus
+- CommerceEvent v2 错误分析
+- 页面弱监督泄漏检查
 
 Day 19:
-- multi-recall + rank + rerank
-- freshness barrier
+- Teacher/audit 阈值校准
+- 商品组级 train/val/test 泄漏复核
 
 Day 20-21:
-- full closed loop
-- feedback → lake
-- viewport impression
-- attribution audit
+- P2/P3/P4 训练与评测闭环
+- 推荐模型工作保留到后续计划
 
-**Gate:** watch/like → attributed item → live interest → exit → relevant items.
+**Gate:** CommerceVLM 仅凭 video + ASR + OCR 生成有证据支撑的 CommerceEvent v2。
 
 ## Week 4 — engineering quality and evidence
 
 Day 22-23:
 - ablations
 - E-VAds Test/eMCR/own gold evaluation
-- KuaiLive/TAOBAO metrics
+- CommerceEvent JSON/字段 F1、价格准确率与无依据生成率
 
 Day 24:
 - failure tests

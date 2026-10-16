@@ -276,139 +276,166 @@ Test 只在所有训练完成后运行官方 evaluation。
 
 ---
 
-## 5. 自建 CommerceEvent 数据
+## 5. 自建 CommerceEvent P2 数据（商品详情页弱监督）
 
-这是 Live2Shop 与 E-VAds/普通视频 QA 拉开区别的关键数据。
+当前方案使用淘宝/天猫、京东商品详情页中的商家商品讲解视频。页面标题、属性和页面价只作为
+离线弱监督；CommerceVLM 的训练输入和在线输入均只有视频、ASR、OCR。不得把页面描述或候选
+商品放入最终学生 prompt，也不得让模型预测平台 `active_item_id`。
 
-你需要自己拥有或获准使用的直播/电商视频。最理想：
+只采集有权用于本项目的数据。采集器使用正常浏览器会话，不绕过登录、验证码或反爬限制。
+原始 HTML、截图和浏览器 profile 可能含敏感状态，必须放在已忽略的 `data/` 或 `profiles/` 下。
 
-- 自己使用 OBS 拍 10~30 条“直播”；
-- 每条 5~20 分钟；
-- 准备对应直播间商品池；
-- 主播/你自己按时间切换商品；
-- 包含价格口播、屏幕 OCR、相似商品、无商品聊天段。
+### 5.1 采集商品页、主详情和对应视频
 
-### 原始 manifest
-
-例如：
+URL 清单：
 
 ```json
-{"video":"/data/live01.mp4","room_id":"20001","catalog":"/data/live01_catalog.json","source":"owned"}
+{"url":"https://item.jd.com/123456.html","rights_basis":"research_authorized"}
+{"url":"https://item.taobao.com/item.htm?id=123456","rights_basis":"research_authorized"}
 ```
 
-### 第一步：5 秒切窗 + ASR + OCR
+首次登录建议用独立 profile 和可见浏览器：
+
+```bash
+pip install -r data_tools/requirements.txt
+playwright install chromium
+
+python data_tools/collect_product_pages.py \
+  --input data/self/product_urls.jsonl \
+  --output-root data/self/product_pages \
+  --output-jsonl data/self/product_page_records.jsonl \
+  --profile-dir profiles/p2-collector \
+  --headed --interactive \
+  --ocr-detail-images
+```
+
+若页面跳转到平台登录页或安全校验页，记录会标为 `access_blocked`，并以
+`login_required`、`anti_bot_challenge` 等 `review_reason` 说明原因；采集器不会把登录页误当成
+商品页，也不会尝试绕过访问控制。登录/安全校验页的 HTML 与截图不会落盘，避免保留临时登录
+二维码或认证令牌；输入 URL 的签名、追踪参数也不会写入记录或控制台。
+
+适配器只从主商品详情/主媒体区域提取文本和详情图片，并排除推荐、猜你喜欢、相似商品区域；
+`--ocr-detail-images` 可补充图片式详情页中的文字。网络中出现的
+视频不会自动视为主商品视频；只有主商品 DOM 关联达到阈值时才自动选择。多视频歧义会进入
+`needs_video_review`，人工确认后在 URL 清单中填写 `video_url` 再采集。
+
+#### 无桌面服务器的人工登录与视频入口核实
+
+~~~bash
+python data_tools/collect_product_pages.py \
+  --url 'https://item.taobao.com/item.htm?id=商品ID' \
+  --output-root data/self/product_pages \
+  --output-jsonl data/self/product_page_records.jsonl \
+  --profile-dir profiles/p2-taobao \
+  --login-ui --login-ui-port 8765 --inspect-media
+~~~
+
+在自己电脑上执行下面的端口转发，或使用 IDE 的端口转发功能：
+
+~~~bash
+ssh -N -L 8765:127.0.0.1:8765 用户名@服务器地址
+~~~
+
+打开终端打印的完整 localhost 地址（包括 # 后的访问令牌）。操作页显示服务器浏览器的
+实时画面，支持扫码登录、点击、输入和滚动。只监听服务器回环地址；界面截图与输入不落盘，
+不要分享操作页地址。独立 profile 保留可持久化的登录会话。
+
+发现登录、验证页或无法确认主商品详情时，程序等待人工处理。点击“完成，继续”后重新访问
+原商品 URL，使用新响应检查，默认最多尝试 3 次，由 --login-attempts 配置。
+每次操作页等待默认 1800 秒，由 --login-timeout-sec 配置；有效会话直接复用，失效时再次等待，
+非交互运行则记录失败。有图形桌面的机器仍可使用 --headed --interactive。
+
+--inspect-media 会在商品页确认可用后再暂停一次，供人工点击视频入口；普通采集可省略。
+media_entries 记录播放器、blob 播放器、直接媒体链接、播放器页面链接和嵌入框架。
+播放器页面链接只作为核实线索，不作为视频文件下载；主商品区域的直接媒体链接才进入选择。
+人工打开的新窗口会接入同一操作界面。网络请求中的媒体仍需主商品关联证据，
+不能仅因点击后出现就自动认定为目标商品视频。
+
+淘宝适配器会展开“参数信息”和“图文详情”，优先定位主标题，并以商品 ID 校验页面内的主商品标题。
+description_sources 明确标记描述来自图文文本还是结构化参数；图片式详情保留为独立图片，
+data-src 等懒加载地址优先于占位图。没有启用 OCR 时，不会声称已经读取图片中的文字。
+
+自动处理“直播讲解”时，采集器先开始观察，再点击主商品侧栏入口；仅在新出现的 Canvas/video
+播放器可见、选中商品标题与主商品一致、主页面中只出现一个新 HLS 清单时自动关联。
+证据保存在 live_video_association 和 selected_video.association 中。多个清单、商品不一致或
+播放器已提前打开时保留人工复核状态。这个关联说明入口属于该商品，不保证整段视频只谈该商品。
+
+HLS 下载优先使用系统 FFmpeg，缺失时使用 imageio-ffmpeg 自带的可执行文件，将流转封装为 MP4，
+不重编码。视频时长不限于 1–5 分钟；后续切窗时应以实际媒体时长为准。
+
+### 5.2 视频去重和按商品分组划分
+
+```bash
+python data_tools/build_product_page_manifest.py \
+  --input data/self/product_page_records.jsonl \
+  --output data/self/product_video_manifest.jsonl \
+  --rejected-output data/self/product_video_rejected.jsonl
+```
+
+脚本按视频 SHA-256 去重；同一商品的所有视频/窗口固定进入同一 split。同一视频若归属多个商品，
+不会静默选一个，而是拒绝并要求人工处理。
+
+### 5.3 切窗、ASR、OCR 和页面证据预对齐
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 python data_tools/build_commerce_windows.py \
-  --manifest data/self/live_manifest.jsonl \
+  --manifest data/self/product_video_manifest.jsonl \
   --output-root data/self/windows \
-  --output-jsonl data/self/windows.jsonl \
+  --output-jsonl data/self/windows_with_page_facts.jsonl \
   --window-ms 5000 \
   --whisper-model small
+
+python data_tools/align_page_video_evidence.py \
+  --input data/self/windows_with_page_facts.jsonl \
+  --output data/self/windows_for_teacher.jsonl
 ```
 
-输出：
+对齐器将页面事实标记为 `supported_text`、`unobserved_text` 或 `conflict_text`。它只判断 ASR/OCR；
+视觉支持仍由多模态 Teacher 或人工审核决定。完整页面描述不会进入结构化候选事实；Teacher 只会
+看到有长度上限的参考摘录，且该摘录也会在最终导出时删除。
 
-```json
-{
-  "media":"...window_0000035000_0000040000.mp4",
-  "start_ms":35000,
-  "end_ms":40000,
-  "asr":"这件九十年代的70505...",
-  "ocr":["399","LEVI'S"],
-  "room_candidates":[...]
-}
-```
+不要只保留“商品清晰出现”的窗口。片头、转场、只口播未展示、无商品画面等负样本应保留，
+并定期检查 `product_visible=false` 的比例，避免模型学成“任何窗口都强行输出商品属性”。
 
-### 第二步：Qwen3-VL-2B teacher 弱标注
-
-Teacher 官方 checkpoint：
-
-https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct
-
-3 张卡并行：
+### 5.4 Teacher 标注、审计与无泄漏导出
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python data_tools/teacher_label_commerce.py \
-  --input data/self/windows.jsonl \
+  --input data/self/windows_for_teacher.jsonl \
   --output data/self/teacher_0.jsonl \
   --shard-id 0 --num-shards 3
 
-CUDA_VISIBLE_DEVICES=1 python data_tools/teacher_label_commerce.py \
-  --input data/self/windows.jsonl \
-  --output data/self/teacher_1.jsonl \
-  --shard-id 1 --num-shards 3
-
-CUDA_VISIBLE_DEVICES=2 python data_tools/teacher_label_commerce.py \
-  --input data/self/windows.jsonl \
-  --output data/self/teacher_2.jsonl \
-  --shard-id 2 --num-shards 3
-```
-
-合并：
-
-```bash
+# 在 GPU 1/2 上分别运行 --shard-id 1/2 后合并：
 cat data/self/teacher_{0,1,2}.jsonl > data/self/teacher_all.jsonl
-```
 
-建议：`8k~12k` 窗口。
-
-### 第三步：自动 QA/audit
-
-```bash
 python data_tools/audit_commerce_labels.py \
   --input data/self/teacher_all.jsonl \
   --out-dir data/self/audit
 ```
 
-产生：
-
-```text
-accepted.jsonl
-needs_review.jsonl
-review.csv
-```
-
-对以下样本人工检查：
-
-- confidence < 0.65；
-- SKU 不在 room catalog；
-- 价格/品牌冲突；
-- OCR 与 ASR 矛盾；
-- 多个候选 SKU 极相似；
-- PRODUCT_SWITCH 前后附近窗口。
-
-在 `review.csv` 的 `corrected_target_json` 填入修正后的 JSON，然后：
+自动审计会检查页面有/视频无、页面与视频冲突、价格证据、引文真实性、schema、prompt 泄漏及
+商品/视频跨 split 泄漏。人工在 `review.csv` 填写 `corrected_target_json` 后导入：
 
 ```bash
 python data_tools/import_reviewed_labels.py \
   --review-csv data/self/audit/review.csv \
   --source-jsonl data/self/audit/needs_review.jsonl \
   --output data/self/audit/reviewed.jsonl
+
+python data_tools/export_p2_student_samples.py \
+  --input data/self/audit/accepted.jsonl \
+  --input data/self/audit/reviewed.jsonl \
+  --split train \
+  --output data/processed/commerce_vlm/p2_sft.jsonl
 ```
 
-### 第四步：手工 Gold Set
+导出器物理删除 `annotation`、`annotation_context`、页面候选事实与采集溯源，只保留训练所需
+字段和非输入元数据。Teacher 标签不能直接作为最终训练文件。
 
-不要拿 teacher label 当最终评测真值。
+### 5.5 Gold Set
 
-使用：
-
-```text
-data_tools/templates/commerce_gold_timeline.csv
-```
-
-人工标至少 `500` 个 5 秒窗口，最好 `800~1000`。
-
-转换：
-
-```bash
-python data_tools/build_gold_from_timeline.py \
-  --csv data/self/gold_timeline.csv \
-  --window-root data/self/windows \
-  --output data/self/gold.jsonl
-```
-
-Gold 数据只用于 val/test，不再回灌训练。
+Teacher label 不是评测真值。应从 train/val/test 商品组中分别抽样，人工核验至少 500 个窗口，
+理想为 800–1000；Gold 仅用于 val/test，不回灌训练。
 
 ---
 

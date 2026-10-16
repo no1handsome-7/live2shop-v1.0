@@ -1,0 +1,7 @@
+profiles/
+__pycache__/
+*.pyc
+capture.mkv
+server/server.env
+.collector_home/
+logs/capture/

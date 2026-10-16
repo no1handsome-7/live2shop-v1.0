@@ -42,7 +42,19 @@ class ASR:
 class OCR:
     def __init__(self):
         from rapidocr import RapidOCR
-        self.ocr = RapidOCR(params={"Rec.lang_type": "ch", "Global.text_score": 0.55})
+
+        model_root = os.getenv(
+            "RAPIDOCR_MODEL_ROOT",
+            "/var/cache/rapidocr",
+        )
+
+        self.ocr = RapidOCR(
+            params={
+                "Rec.lang_type": "ch",
+                "Global.text_score": 0.55,
+                "Global.model_root_dir": model_root,
+            }
+        )
 
     def run(self, frames: list[Image.Image]) -> list[str]:
         texts = []
@@ -66,36 +78,11 @@ def parse_json_loose(text: str) -> dict:
             return json.loads(text[s:e+1])
         raise
 
-def build_prompt(asr: str, ocr: list[str], candidates: list[dict], previous: dict | None) -> str:
-    slim = []
-    for c in candidates:
-        slim.append({
-            "item_id": c["item_id"],
-            "title": c["title"],
-            "category_path": c.get("category_path") or [],
-            "brand": c.get("brand"),
-            "style_tags": c.get("style_tags") or [],
-            "price_cent": c.get("price_cent"),
-        })
-    schema = {
-        "product_visible": True,
-        "active_item_id": 0,
-        "category": "",
-        "brand": "",
-        "style_tags": [],
-        "color": "",
-        "attributes": {},
-        "price_cent": 0,
-        "promotion_tags": [],
-        "evidence": {"asr": [], "ocr": [], "visual": []},
-        "confidence": 0.0,
-    }
+def build_prompt(asr: str, ocr: list[str]) -> str:
     return (
-        "你是直播电商内容状态解析器。根据视频帧、ASR、OCR以及直播间候选商品池，"
-        "输出当前窗口的完整商品状态。无法可靠确认 SKU 时 active_item_id=null；"
-        "不得编造价格、品牌或促销。只输出 JSON。\n"
-        f"ASR: {asr}\nOCR: {ocr}\n"
-        f"候选商品: {json.dumps(slim, ensure_ascii=False)}\n"
-        f"上一状态: {json.dumps(previous or {}, ensure_ascii=False)}\n"
-        f"JSON schema示例: {json.dumps(schema, ensure_ascii=False)}"
+        "根据商品讲解视频及以下自动转写信息，输出当前窗口的 CommerceEvent JSON。"
+        "只能使用视频画面、ASR 和 OCR 中可观察到的证据；未知字段使用 null、空列表或空对象，"
+        "不得猜测平台商品 ID 或任何未观察属性。price_cent 仅表示当前视频中明确出现的人民币价格（分）。\n"
+        f"ASR={asr or ''}\n"
+        f"OCR={json.dumps(ocr or [], ensure_ascii=False)}"
     )

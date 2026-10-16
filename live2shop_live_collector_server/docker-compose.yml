@@ -1,0 +1,42 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: live2shop-capture:pw1.63.0-noble
+    container_name: live2shop-capture
+    init: true
+    ipc: host
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/live2shop
+    environment:
+      DISPLAY: ":99"
+      SCREEN_WIDTH: "${SCREEN_WIDTH:-1280}"
+      SCREEN_HEIGHT: "${SCREEN_HEIGHT:-720}"
+      SCREEN_DEPTH: "${SCREEN_DEPTH:-24}"
+      XDG_RUNTIME_DIR: "/tmp/live2shop-runtime"
+      PULSE_SERVER: "unix:/tmp/live2shop-runtime/pulse/native"
+      COLLECTOR_UID: "${COLLECTOR_UID:-1000}"
+      COLLECTOR_GID: "${COLLECTOR_GID:-1000}"
+      COLLECTOR_USER: "pwuser"
+      LIVE2SHOP_DISABLE_BROWSER_SANDBOX: "${LIVE2SHOP_DISABLE_BROWSER_SANDBOX:-1}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
+    volumes:
+      - "${LIVE2SHOP_ROOT:-..}:/workspace/live2shop"
+    ports:
+      - "127.0.0.1:${VNC_HOST_PORT:-5901}:5901"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /tmp/live2shop-ready && pgrep -x Xvfb >/dev/null && pgrep -x x11vnc >/dev/null && gosu pwuser pactl info >/dev/null 2>&1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s

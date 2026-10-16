@@ -1,0 +1,32 @@
+Live2Shop SERVER QUICKSTART
+===========================
+
+1. Put this folder under:
+   ~/data_desk/live2shop-v1.0/live2shop_live_collector_server
+
+2. Server:
+   cd ~/data_desk/live2shop-v1.0/live2shop_live_collector_server
+   ./server/start_server.sh
+
+3. Local computer:
+   ssh -N -L 5901:127.0.0.1:5901 user25@SERVER
+
+4. VNC Viewer:
+   127.0.0.1:5901
+
+5. Server, preferably inside tmux:
+   ./server/collect_room.sh \
+     --room-id douyin_001 \
+     --url "REAL_LIVE_URL" \
+     --category "服饰鞋包" \
+     --minutes 15
+
+6. First collect only:
+   douyin_001
+   xiaohongshu_001
+   taobao_001
+
+7. Validate video + audio + build_commerce_windows before scaling.
+
+Full guide:
+   README_SERVER_CN.md

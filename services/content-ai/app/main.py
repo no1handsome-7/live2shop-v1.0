@@ -22,6 +22,7 @@ from live2shop.v1 import common_pb2, content_pb2, media_pb2
 from .catalog import Catalog
 from .perception import ASR, OCR, build_prompt, parse_json_loose, sample_frames
 from .runtime import CommerceRuntime
+from .baseline import BaselineRuntime
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("content-ai")
@@ -34,6 +35,19 @@ POSTGRES_DSN = os.getenv("POSTGRES_DSN", "postgresql://live2shop:live2shop@postg
 MODEL_DIR = os.getenv("MODEL_DIR", "/models/commerce-vlm/champion")
 MODEL_BACKEND = os.getenv("MODEL_BACKEND", "trained")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "commerce-vlm-v1")
+MODEL_ALIAS = os.getenv(
+    "MODEL_ALIAS",
+    "champion" if MODEL_BACKEND == "trained" else "baseline",
+)
+EMBEDDING_VERSION = os.getenv(
+    "EMBEDDING_VERSION",
+    "commerce-space-v1" if MODEL_BACKEND == "trained"
+    else "baseline-hash-v1",
+)
+ASR_BACKEND = os.getenv("ASR_BACKEND", "whisper")
+OCR_BACKEND = os.getenv("OCR_BACKEND", "rapidocr")
+CONSUMER_GROUP = os.getenv("CONTENT_AI_CONSUMER_GROUP", "content-ai-v1")
+AUTO_OFFSET_RESET = os.getenv("CONTENT_AI_AUTO_OFFSET_RESET", "earliest")
 
 SEGMENT_LATENCY = Histogram("content_ai_segment_seconds", "Segment processing latency")
 SEGMENTS = Counter("content_ai_segments_total", "Processed segments", ["status"])
@@ -73,16 +87,40 @@ def meta(event_time_ms: int):
     )
 
 def transition(prev: dict | None, cur: dict) -> int:
-    if not prev and cur.get("product_visible"):
+    prev_visible = bool(prev and prev.get("product_visible"))
+    cur_visible = bool(cur.get("product_visible"))
+
+    # Invisible -> visible is an appearance, even when a previous
+    # ContentState exists for this stream session.
+    if cur_visible and not prev_visible:
         return content_pb2.PRODUCT_APPEARED
-    if prev and prev.get("product_visible") and not cur.get("product_visible"):
+
+    if prev_visible and not cur_visible:
         return content_pb2.PRODUCT_DISAPPEARED
-    if prev and prev.get("active_item_id") != cur.get("active_item_id") and cur.get("active_item_id"):
+
+    # Switching only makes sense while a product remains visible.
+    if (
+        prev_visible
+        and cur_visible
+        and prev.get("active_item_id") != cur.get("active_item_id")
+        and cur.get("active_item_id") is not None
+    ):
         return content_pb2.PRODUCT_SWITCH
-    if prev and prev.get("price_cent") != cur.get("price_cent"):
+
+    if (
+        prev_visible
+        and cur_visible
+        and prev.get("price_cent") != cur.get("price_cent")
+    ):
         return content_pb2.PRICE_CHANGE
-    if prev and prev.get("promotion_tags") != cur.get("promotion_tags"):
+
+    if (
+        prev_visible
+        and cur_visible
+        and prev.get("promotion_tags") != cur.get("promotion_tags")
+    ):
         return content_pb2.PROMOTION_CHANGE
+
     return content_pb2.TRANSITION_NONE
 
 def object_parts(uri: str):
@@ -101,27 +139,42 @@ def process_segment(ev: media_pb2.MediaSegmentEvent):
         try:
             minio.fget_object(bucket, key, local)
             frames = sample_frames(local, 8)
-            asr_text = asr.transcribe(local)
-            ocr_text = ocr.run(frames)
+            asr_text = asr.transcribe(local) if asr is not None else ""
+            ocr_text = ocr.run(frames) if ocr is not None else []
             candidates = catalog.candidates(ev.room_id)
 
             state_key = (ev.room_id, ev.stream_session_id)
             with state_lock:
                 prev = last_states.get(state_key)
 
-            prompt = build_prompt(asr_text, ocr_text, candidates, prev)
-            obj, emb = runtime.infer(frames, prompt)
+            if MODEL_BACKEND == "baseline":
+                obj, emb = runtime.infer(
+                    asr_text,
+                    ocr_text,
+                    candidates,
+                )
+            else:
+                # CommerceVLM v2 receives video + ASR + OCR only. Catalog and
+                # previous state remain outside the model boundary.
+                prompt = build_prompt(asr_text, ocr_text)
+                obj, emb = runtime.infer(frames, prompt)
 
             # Business validation: SKU must be in this room's candidate set.
             allowed = {int(x["item_id"]) for x in candidates}
-            active = obj.get("active_item_id")
+            active = obj.get("active_item_id") if MODEL_BACKEND == "baseline" else None
             if active is not None:
                 try: active = int(active)
                 except Exception: active = None
             if active not in allowed:
                 active = None
 
-            conf = max(0.0, min(1.0, float(obj.get("confidence", 0.0))))
+            if MODEL_BACKEND == "baseline":
+                conf = max(0.0, min(1.0, float(obj.get("confidence", 0.0))))
+            else:
+                # Annotation confidence is not a v2 prediction target. This is
+                # an explicit service-side quality heuristic for the protobuf.
+                has_evidence = bool(asr_text or ocr_text or (obj.get("evidence") or {}).get("visual"))
+                conf = 0.75 if obj.get("product_visible") and has_evidence else 0.4
             if active is None and conf > 0.8:
                 conf = 0.8
 
@@ -191,10 +244,18 @@ def process_segment(ev: media_pb2.MediaSegmentEvent):
                 ],
                 evidence=evidence,
                 content_embedding=common_pb2.EmbeddingVector(
-                    dim=len(emb), values=emb, version="commerce-space-v1"
+                    dim=len(emb), values=emb, version=EMBEDDING_VERSION
                 ),
                 confidence=conf,
-                model=common_pb2.ModelRef(name="commerce-vlm", version=MODEL_VERSION, alias="champion"),
+                model=common_pb2.ModelRef(
+                    name=(
+                        "commerce-vlm"
+                        if MODEL_BACKEND == "trained"
+                        else "commerce-baseline"
+                    ),
+                    version=MODEL_VERSION,
+                    alias=MODEL_ALIAS,
+                ),
             )
             if prev and prev.get("state_id"):
                 out.previous_state_id = prev["state_id"]
@@ -217,7 +278,7 @@ def process_segment(ev: media_pb2.MediaSegmentEvent):
             current["asr"] = asr_text
             current["ocr"] = ocr_text
             current["model_version"] = MODEL_VERSION
-            current["embedding_version"] = "commerce-space-v1"
+            current["embedding_version"] = EMBEDDING_VERSION
             with state_lock:
                 last_states[state_key] = current
             redis_client.set(
@@ -276,8 +337,8 @@ def persist_content_state(ev: content_pb2.ContentStateEvent):
 def consume_loop():
     c = Consumer({
         "bootstrap.servers": BROKERS,
-        "group.id": "content-ai-v1",
-        "auto.offset.reset": "earliest",
+        "group.id": CONSUMER_GROUP,
+        "auto.offset.reset": AUTO_OFFSET_RESET,
         "enable.auto.commit": False,
     })
     c.subscribe(["live2shop.media.segment.v1"])
@@ -337,14 +398,50 @@ def healthz():
 @app.on_event("startup")
 def startup():
     global runtime, asr, ocr
-    if MODEL_BACKEND != "trained":
-        raise RuntimeError(
-            "Final Live2Shop mode requires MODEL_BACKEND=trained. "
-            "Train CommerceVLM and mount its checkpoint."
+
+    if MODEL_BACKEND == "trained":
+        runtime = CommerceRuntime(MODEL_DIR)
+    elif MODEL_BACKEND == "baseline":
+        runtime = BaselineRuntime()
+        log.warning(
+            "starting integration baseline; "
+            "this is NOT the CommerceVLM champion model"
         )
-    runtime = CommerceRuntime(MODEL_DIR)
-    asr = ASR(os.getenv("WHISPER_MODEL", "small"))
-    ocr = OCR()
+    else:
+        raise RuntimeError(
+            f"unsupported MODEL_BACKEND={MODEL_BACKEND!r}"
+        )
+
+    if ASR_BACKEND == "whisper":
+        asr = ASR(os.getenv("WHISPER_MODEL", "small"))
+    elif ASR_BACKEND == "disabled":
+        asr = None
+    else:
+        raise RuntimeError(
+            f"unsupported ASR_BACKEND={ASR_BACKEND!r}"
+        )
+
+    if OCR_BACKEND == "rapidocr":
+        ocr = OCR()
+    elif OCR_BACKEND == "disabled":
+        ocr = None
+    else:
+        raise RuntimeError(
+            f"unsupported OCR_BACKEND={OCR_BACKEND!r}"
+        )
+
+    log.info(
+        "content-ai ready backend=%s model_version=%s "
+        "alias=%s asr=%s ocr=%s group=%s offset_reset=%s",
+        MODEL_BACKEND,
+        MODEL_VERSION,
+        MODEL_ALIAS,
+        ASR_BACKEND,
+        OCR_BACKEND,
+        CONSUMER_GROUP,
+        AUTO_OFFSET_RESET,
+    )
+
     threading.Thread(target=consume_loop, daemon=True).start()
 
 app.mount("/metrics", make_asgi_app())

@@ -23,7 +23,26 @@ public class RealtimeAttributionJob {
         long waitMs = Long.parseLong(env("ATTRIBUTION_LATENESS_MS", "7000"));
         long stalenessMs = Long.parseLong(env("POINT_STALENESS_MS", "8000"));
 
+        String kafkaTxnTimeoutMs =
+                env("KAFKA_TRANSACTION_TIMEOUT_MS", "300000");
+        String kafkaTransactionalIdPrefix =
+                env("KAFKA_TRANSACTIONAL_ID_PREFIX", "live2shop-attribution");
+
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        // Protobuf generated messages are not safe with Kryo's reflective
+        // field serializer because repeated fields use protobuf-managed
+        // collection implementations. Serialize them via protobuf wire bytes.
+        env.getConfig().registerTypeWithKryoSerializer(
+                UserBehaviorEvent.class,
+                ProtobufKryoSerializers.UserBehaviorEventSerializer.class);
+        env.getConfig().registerTypeWithKryoSerializer(
+                ContentStateEvent.class,
+                ProtobufKryoSerializers.ContentStateEventSerializer.class);
+        env.getConfig().registerTypeWithKryoSerializer(
+                AttributedBehaviorEvent.class,
+                ProtobufKryoSerializers.AttributedBehaviorEventSerializer.class);
+
         env.enableCheckpointing(10_000, CheckpointingMode.EXACTLY_ONCE);
         env.getCheckpointConfig().setCheckpointTimeout(60_000);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(5_000);
@@ -75,7 +94,8 @@ public class RealtimeAttributionJob {
                 .<AttributedBehaviorEvent>builder()
                 .setBootstrapServers(brokers)
                 .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)
-                .setTransactionalIdPrefix("live2shop-attribution-")
+                .setTransactionalIdPrefix(kafkaTransactionalIdPrefix)
+                .setProperty("transaction.timeout.ms", kafkaTxnTimeoutMs)
                 .setRecordSerializer((KafkaRecordSerializationSchema<AttributedBehaviorEvent>)
                         (element, context, timestamp) -> new ProducerRecord<>(
                                 "live2shop.behavior.attributed.v1",
